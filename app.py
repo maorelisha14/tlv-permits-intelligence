@@ -61,57 +61,57 @@ st.set_page_config(
 st.markdown(
     """
 <style>
-/* 1. Force white text across all inputs, selectboxes, placeholders, and popovers */
+/* 1. Universal text & text-fill reset for all selectboxes, inputs, popovers, and virtual lists */
 html body div[data-testid="stSelectbox"] *,
 html body div[data-testid="stTextInput"] *,
 html body div[data-baseweb="select"] *,
 html body div[data-baseweb="input"] *,
 html body div[data-baseweb="popover"] *,
-html body ul[data-baseweb="menu"] *,
-html body li[data-baseweb="option"] * {
+html body div[data-testid="stSelectboxVirtualDropdown"] *,
+html body [role="listbox"] *,
+html body [role="option"] * {
     color: #FFFFFF !important;
+    -webkit-text-fill-color: #FFFFFF !important;
 }
 
-/* 2. Maintain dark slate background on input fields and popover dropdown containers */
+/* 2. Target nested paragraph and span tags in select trigger boxes explicitly */
+html body div[data-testid="stSelectbox"] p,
+html body div[data-testid="stSelectbox"] span,
+html body div[data-baseweb="select"] p,
+html body div[data-baseweb="select"] span {
+    color: #FFFFFF !important;
+    -webkit-text-fill-color: #FFFFFF !important;
+}
+
+/* 3. Maintain dark slate background on input fields and popover containers */
 html body div[data-baseweb="input"],
 html body div[data-baseweb="select"] > div,
-html body div[data-baseweb="popover"] ul[data-baseweb="menu"] {
+html body div[data-baseweb="popover"] ul,
+html body div[data-testid="stSelectboxVirtualDropdown"],
+html body [role="listbox"] {
     background-color: #1E293B !important;
 }
 
-/* 3. Style dropdown options background and force white text */
+/* 4. Dropdown individual options background and hover states */
+html body [role="option"],
 html body div[data-baseweb="popover"] li[data-baseweb="option"] {
     background-color: #1E293B !important;
     color: #FFFFFF !important;
+    -webkit-text-fill-color: #FFFFFF !important;
 }
 
-/* 4. Hover state for dropdown options */
+html body [role="option"]:hover,
+html body [role="option"][aria-selected="true"],
 html body div[data-baseweb="popover"] li[data-baseweb="option"]:hover,
 html body div[data-baseweb="popover"] li[data-baseweb="option"][aria-selected="true"] {
     background-color: #334155 !important;
 }
 
-html body div[data-baseweb="popover"] li[data-baseweb="option"]:hover *,
-html body div[data-baseweb="popover"] li[data-baseweb="option"][aria-selected="true"] * {
-    color: #FFFFFF !important;
+/* 5. Placeholder text handling */
+html body div[data-baseweb="input"] input::placeholder {
+    color: rgba(255, 255, 255, 0.7) !important;
+    -webkit-text-fill-color: rgba(255, 255, 255, 0.7) !important;
 }
-
-/* 5. Supplement: BASE_CSS sets -webkit-text-fill-color on inputs (overrides color), and
-      `color` on `*` does not reach ::placeholder, so cover both explicitly. */
-html body div[data-baseweb="input"] input,
-html body div[data-baseweb="select"] input,
-html body div[data-testid="stTextInput"] input {
-    -webkit-text-fill-color: #FFFFFF !important;
-    caret-color: #FFFFFF !important;
-}
-html body div[data-baseweb="input"] input::placeholder,
-html body div[data-baseweb="select"] input::placeholder,
-html body div[data-testid="stTextInput"] input::placeholder {
-    color: #FFFFFF !important;
-    -webkit-text-fill-color: #FFFFFF !important;
-    opacity: 0.7;
-}
-html body div[data-baseweb="select"] svg { fill: #FFFFFF !important; }
 </style>
 """,
     unsafe_allow_html=True,

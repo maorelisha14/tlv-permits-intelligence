@@ -1,0 +1,11 @@
+﻿httpx
+google-genai
+supabase
+python-dotenv
+pydantic
+pypdf
+streamlit>=1.66.0
+pandas
+plotly
+# only needed for fetch_protocols_playwright_backup.py
+playwright

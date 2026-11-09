@@ -1,4 +1,4 @@
-import html
+﻿import html
 import inspect
 import os
 import time
@@ -55,62 +55,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Input contrast fix: white text on dark fields (text input + select/multiselect + dropdown options).
-# Colour/background only - no direction/alignment rules, so the RTL layout is untouched.
-# Extra "html body" prefix gives higher specificity than the later BASE_CSS rules.
-st.markdown(
-    """
-<style>
-/* 1. Explicitly override .stApp input and all selectbox text/caret to bright white */
-html body .stApp input,
-html body .stApp textarea,
-html body div[data-testid="stTextInput"] input,
-html body div[data-testid="stSelectbox"] *,
-html body div[data-testid="stMultiSelect"] *,
-html body div[data-baseweb="select"] *,
-html body div[data-baseweb="input"] *,
-html body div[data-baseweb="popover"] *,
-html body div[data-testid="stSelectboxVirtualDropdown"] *,
-html body [role="listbox"] *,
-html body [role="option"] * {
-    color: #FFFFFF !important;
-    -webkit-text-fill-color: #FFFFFF !important;
-    caret-color: #FFFFFF !important;
-}
-
-/* 2. Container dark backgrounds */
-html body div[data-baseweb="input"],
-html body div[data-baseweb="select"] > div,
-html body div[data-baseweb="popover"] ul,
-html body div[data-testid="stSelectboxVirtualDropdown"],
-html body [role="listbox"] {
-    background-color: #1E293B !important;
-}
-
-/* 3. Dropdown option items background and hover states */
-html body [role="option"],
-html body div[data-baseweb="popover"] li[data-baseweb="option"] {
-    background-color: #1E293B !important;
-    color: #FFFFFF !important;
-    -webkit-text-fill-color: #FFFFFF !important;
-}
-
-html body [role="option"]:hover,
-html body [role="option"][aria-selected="true"],
-html body div[data-baseweb="popover"] li[data-baseweb="option"]:hover,
-html body div[data-baseweb="popover"] li[data-baseweb="option"][aria-selected="true"] {
-    background-color: #334155 !important;
-}
-
-/* 4. Placeholder styling */
-html body div[data-baseweb="input"] input::placeholder {
-    color: rgba(255, 255, 255, 0.7) !important;
-    -webkit-text-fill-color: rgba(255, 255, 255, 0.7) !important;
-}
-</style>
-""",
-    unsafe_allow_html=True,
-)
 
 # ---------------------------------------------------------
 # 2. CSS - hard-coded contrast, safe in light and dark mode, RTL, responsive
@@ -326,6 +270,43 @@ div[data-baseweb="popover"] ul[role="listbox"], div[data-baseweb="popover"] li, 
   .stApp .kpi-card .kpi-value { font-size: 1.5rem; }
   [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:has(.kpi-card),
   [data-testid="stHorizontalBlock"] > [data-testid="column"]:has(.kpi-card) { min-width: 100% !important; flex: 1 1 100% !important; }
+}
+
+/* High-contrast input overrides (kept last so they win the cascade) */
+.stApp input,
+.stApp textarea,
+div[data-testid="stTextInput"] input,
+div[data-testid="stSelectbox"] *,
+div[data-testid="stMultiSelect"] *,
+div[data-baseweb="select"] *,
+div[data-baseweb="input"] *,
+div[data-baseweb="popover"] *,
+div[data-testid="stSelectboxVirtualDropdown"] *,
+[role="listbox"] *,
+[role="option"] * {
+    color: #FFFFFF !important;
+    -webkit-text-fill-color: #FFFFFF !important;
+    caret-color: #FFFFFF !important;
+}
+
+div[data-baseweb="input"],
+div[data-baseweb="select"] > div,
+div[data-baseweb="popover"] ul,
+div[data-testid="stSelectboxVirtualDropdown"],
+[role="listbox"] {
+    background-color: #1E293B !important;
+}
+
+[role="option"]:hover,
+[role="option"][aria-selected="true"],
+div[data-baseweb="popover"] li[data-baseweb="option"]:hover,
+div[data-baseweb="popover"] li[data-baseweb="option"][aria-selected="true"] {
+    background-color: #334155 !important;
+}
+
+div[data-baseweb="input"] input::placeholder {
+    color: rgba(255, 255, 255, 0.7) !important;
+    -webkit-text-fill-color: rgba(255, 255, 255, 0.7) !important;
 }
 </style>
 """

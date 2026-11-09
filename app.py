@@ -61,9 +61,10 @@ st.set_page_config(
 st.markdown(
     """
 <style>
-/* 1. Universal text & text-fill reset for all selectboxes, inputs, popovers, and virtual lists */
+/* Uniform white text across all inputs, selectboxes, placeholders, and popovers */
 html body div[data-testid="stSelectbox"] *,
 html body div[data-testid="stTextInput"] *,
+html body div[data-testid="stMultiSelect"] *,
 html body div[data-baseweb="select"] *,
 html body div[data-baseweb="input"] *,
 html body div[data-baseweb="popover"] *,
@@ -74,16 +75,7 @@ html body [role="option"] * {
     -webkit-text-fill-color: #FFFFFF !important;
 }
 
-/* 2. Target nested paragraph and span tags in select trigger boxes explicitly */
-html body div[data-testid="stSelectbox"] p,
-html body div[data-testid="stSelectbox"] span,
-html body div[data-baseweb="select"] p,
-html body div[data-baseweb="select"] span {
-    color: #FFFFFF !important;
-    -webkit-text-fill-color: #FFFFFF !important;
-}
-
-/* 3. Maintain dark slate background on input fields and popover containers */
+/* Force dark slate background for input boxes and popovers */
 html body div[data-baseweb="input"],
 html body div[data-baseweb="select"] > div,
 html body div[data-baseweb="popover"] ul,
@@ -92,14 +84,7 @@ html body [role="listbox"] {
     background-color: #1E293B !important;
 }
 
-/* 4. Dropdown individual options background and hover states */
-html body [role="option"],
-html body div[data-baseweb="popover"] li[data-baseweb="option"] {
-    background-color: #1E293B !important;
-    color: #FFFFFF !important;
-    -webkit-text-fill-color: #FFFFFF !important;
-}
-
+/* Dropdown item hover state */
 html body [role="option"]:hover,
 html body [role="option"][aria-selected="true"],
 html body div[data-baseweb="popover"] li[data-baseweb="option"]:hover,
@@ -107,7 +92,7 @@ html body div[data-baseweb="popover"] li[data-baseweb="option"][aria-selected="t
     background-color: #334155 !important;
 }
 
-/* 5. Placeholder text handling */
+/* Placeholder styling */
 html body div[data-baseweb="input"] input::placeholder {
     color: rgba(255, 255, 255, 0.7) !important;
     -webkit-text-fill-color: rgba(255, 255, 255, 0.7) !important;

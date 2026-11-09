@@ -308,6 +308,27 @@ div[data-baseweb="input"] input::placeholder {
     color: rgba(255, 255, 255, 0.7) !important;
     -webkit-text-fill-color: rgba(255, 255, 255, 0.7) !important;
 }
+
+/* Target selectbox selected text, placeholder text, and input values in ALL states */
+div[data-baseweb="select"] div,
+div[data-baseweb="select"] span,
+div[data-baseweb="input"] input,
+div[data-testid="stSelectbox"] div[role="combobox"],
+div[data-testid="stMultiSelect"] span,
+.stApp input::placeholder,
+.stApp textarea::placeholder,
+div[data-baseweb="select"] ::placeholder {
+    color: #FFFFFF !important;
+    -webkit-text-fill-color: #FFFFFF !important;
+    opacity: 1 !important;
+}
+
+/* Ensure caret and selection background remain clear */
+.stApp input, .stApp textarea {
+    color: #FFFFFF !important;
+    -webkit-text-fill-color: #FFFFFF !important;
+    caret-color: #FFFFFF !important;
+}
 </style>
 """
 
@@ -622,10 +643,13 @@ def style_figure(fig: go.Figure, height: int) -> go.Figure:
 
 
 def neighborhood_chart(data: pd.DataFrame, grid: bool, height: int) -> go.Figure:
-    by_neigh = (
+    # Computed fresh from the filtered DataFrame passed in (no cache, no globals).
+    # Top 10 by units; ascending order so the largest bar renders at the top of the horizontal chart.
+    df_top10 = (
         data.groupby("neighborhood")["apartment_count"].sum().reset_index()
-        .sort_values(by="apartment_count", ascending=True).tail(10)
+        .sort_values("apartment_count", ascending=False).head(10)
     )
+    by_neigh = df_top10.sort_values("apartment_count", ascending=True)
     fig = go.Figure(
         go.Bar(
             x=by_neigh["apartment_count"],
@@ -691,7 +715,7 @@ def status_chart(data: pd.DataFrame, height: int) -> go.Figure:
 # ---------------------------------------------------------
 # 7. Main dashboard (optionally a fragment that re-runs on the chosen refresh interval)
 # ---------------------------------------------------------
-def render_dashboard() -> None:
+def render_dashboard(df: pd.DataFrame) -> None:
     # Settings widgets live in the "ניתוח מגמות ושוק" tab; their values persist in session_state by key.
     compact = st.session_state.get("opt_density", DENSITY_OPTIONS[0]) == "קומפקטית"
     show_grid = bool(st.session_state.get("opt_grid", False))
@@ -824,6 +848,6 @@ def render_dashboard() -> None:
 
 if refresh_secs:
     # Re-run only the dashboard body on the chosen interval; data cache is bucketed by the same interval.
-    st.fragment(run_every=refresh_secs)(render_dashboard)()
+    st.fragment(run_every=refresh_secs)(render_dashboard)(df)
 else:
-    render_dashboard()
+    render_dashboard(df)

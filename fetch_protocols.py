@@ -525,8 +525,8 @@ def run_pipeline(results: list[ScanResult], dry_run: bool, workers: int = 5) -> 
         outcomes = [o for o in (outcomes_by_file.get(f.name, "db_failed") for f in r.files) if o != "superseded"]
         if not outcomes:
             continue
-        if all(o in ("saved", "pending", "rejected") for o in outcomes):  # "rejected" = legacy name for "pending"
-            if "saved" in outcomes:
+        if all(o in ("saved", "pending", "rejected", "already_done") for o in outcomes):  # "rejected" = legacy name for "pending"
+            if "saved" in outcomes or "already_done" in outcomes:
                 r.status = "COMPLETED"  # a valid committee decision was stored in tel_aviv_permits
             else:
                 # Only background / agenda documents so far: nothing saved, and the request STAYS PENDING so
@@ -535,7 +535,7 @@ def run_pipeline(results: list[ScanResult], dry_run: bool, workers: int = 5) -> 
         else:
             # Gemini (both models) or DB failure: FAILED with the specific error; retried automatically
             # while retry_count < MAX_FAILED_RETRIES, and once more in the end-of-run pass.
-            failed = [errors[f.name] for f, o in zip(r.files, outcomes) if o not in ("saved", "pending", "rejected") and f.name in errors]
+            failed = [errors[f.name] for f, o in zip(r.files, outcomes) if o not in ("saved", "pending", "rejected", "already_done") and f.name in errors]
             r.status = "FAILED"
             r.note = (" | ".join(failed) or "processing failed")[: process_pdf.NOTE_MAX_LEN]
             r.retry_count += 1
@@ -805,11 +805,11 @@ def main() -> int:
     ap.add_argument("--forward-only", action="store_true")
     ap.add_argument("--batch-size", type=int, help="ids per batch (default 40 with --mode, else 25)")
     ap.add_argument("--http-workers", type=int, default=10, help="threads for the lightweight HTTP availability checks")
-    ap.add_argument("--workers", type=int, default=4, help="threads for PDF download + Gemini extraction")
+    ap.add_argument("--workers", type=int, default=4, help="threads for PDF download (Gemini extraction itself is always sequential)")
     ap.add_argument("--months", type=int,
                     help="ignore decisions older than N months (default: 12; baseline: no limit; 0 = no limit)")
     ap.add_argument("--delay", type=float, default=0.2, help="seconds between HTTP requests")
-    ap.add_argument("--gemini-rpm", type=int, help="max Gemini calls per minute (default 12, or GEMINI_RPM env); raise on a paid tier")
+    ap.add_argument("--gemini-rpm", type=int, help="max Gemini calls per minute (default: one call per 4.5s, or GEMINI_MIN_INTERVAL env); raise on a paid tier")
     ap.add_argument("--dry-run", action="store_true", help="HTTP only: no Supabase, no Gemini (forward scan needs --start-id)")
     args = ap.parse_args()
     if args.stats:

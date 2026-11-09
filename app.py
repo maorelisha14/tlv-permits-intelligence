@@ -284,13 +284,15 @@ PERMITS_TABLE = "tel_aviv_permits"
 PAGE_SIZE = 1000  # PostgREST returns at most 1000 rows per request by default
 
 
-def _get_setting(name: str) -> str:
-    """env var first, then Streamlit secrets (for hosted deployments)."""
-    value = os.getenv(name)
+def get_config(key: str) -> str:
+    """Resolve a setting: os.getenv (.env / real env) first, then st.secrets (Streamlit Cloud).
+    Returns "" when the key is in neither. Never raises (st.secrets raises if no secrets.toml exists)."""
+    value = os.getenv(key)
     if not value:
         try:
-            value = st.secrets.get(name, "")
-        except Exception:
+            if key in st.secrets:
+                value = str(st.secrets[key])
+        except Exception:  # no secrets file / secrets unavailable
             value = ""
     return (value or "").strip().strip('"').strip("'")
 
@@ -307,15 +309,22 @@ def normalize_supabase_url(url: str) -> str:
     return url
 
 
-SUPABASE_URL = normalize_supabase_url(_get_setting("SUPABASE_URL"))
-SUPABASE_KEY = _get_setting("SUPABASE_KEY")
+SUPABASE_URL = normalize_supabase_url(get_config("SUPABASE_URL"))
+SUPABASE_KEY = get_config("SUPABASE_KEY")
+GEMINI_API_KEY = get_config("GEMINI_API_KEY")  # not used by the dashboard itself; resolved for parity with the pipeline
+
+# The dashboard only reads from Supabase, so only those two are required to render it.
+_missing = [k for k, v in (("SUPABASE_URL", SUPABASE_URL), ("SUPABASE_KEY", SUPABASE_KEY)) if not v]
+if _missing:
+    st.error(
+        "חסרים מפתחות התחברות: " + ", ".join(_missing) + ". "
+        "הגדר אותם בקובץ .env (מקומית) או ב-Secrets של Streamlit Cloud."
+    )
+    st.stop()
 
 
 @st.cache_resource
 def init_supabase():
-    if not SUPABASE_URL or not SUPABASE_KEY:
-        st.error("חסרים מפתחות התחברות ב-env (SUPABASE_URL / SUPABASE_KEY)")
-        st.stop()
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 

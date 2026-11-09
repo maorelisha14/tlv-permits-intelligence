@@ -55,6 +55,55 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# Input contrast fix: white text on dark fields (text input + select/multiselect + dropdown options).
+# Colour/background only - no direction/alignment rules, so the RTL layout is untouched.
+# Extra "html body" prefix gives higher specificity than the later BASE_CSS rules.
+st.markdown(
+    """
+<style>
+html body .stApp [data-baseweb="input"],
+html body .stApp [data-baseweb="base-input"],
+html body .stApp [data-baseweb="select"] > div {
+  background-color: #1E293B !important;
+  border-color: #475569 !important;
+}
+html body .stApp [data-baseweb="input"] input,
+html body .stApp [data-baseweb="base-input"] input,
+html body .stApp [data-baseweb="select"] input,
+html body .stApp [data-baseweb="input"] textarea {
+  color: #FFFFFF !important;
+  -webkit-text-fill-color: #FFFFFF !important;
+  caret-color: #FFFFFF !important;
+}
+html body .stApp [data-baseweb="input"] input::placeholder,
+html body .stApp [data-baseweb="base-input"] input::placeholder,
+html body .stApp [data-baseweb="select"] input::placeholder {
+  color: #B0B0B0 !important;
+  -webkit-text-fill-color: #B0B0B0 !important;
+  opacity: 1 !important;
+}
+/* selected value / placeholder text shown inside the select box */
+html body .stApp [data-baseweb="select"] div,
+html body .stApp [data-baseweb="select"] span {
+  color: #FFFFFF !important;
+  -webkit-text-fill-color: #FFFFFF !important;
+}
+html body .stApp [data-baseweb="select"] svg { fill: #FFFFFF !important; }
+/* dropdown options (rendered in a portal outside .stApp) */
+html body div[data-baseweb="popover"] ul,
+html body div[data-baseweb="popover"] [role="listbox"] { background-color: #1E293B !important; }
+html body div[data-baseweb="popover"] li,
+html body div[data-baseweb="popover"] li *,
+html body div[data-baseweb="popover"] [role="option"],
+html body div[data-baseweb="popover"] [role="option"] * { color: #FFFFFF !important; }
+html body div[data-baseweb="popover"] li:hover,
+html body div[data-baseweb="popover"] li[aria-selected="true"],
+html body div[data-baseweb="popover"] [role="option"]:hover { background-color: #334155 !important; }
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
 # ---------------------------------------------------------
 # 2. CSS - hard-coded contrast, safe in light and dark mode, RTL, responsive
 # ---------------------------------------------------------

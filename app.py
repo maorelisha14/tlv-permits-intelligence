@@ -61,9 +61,11 @@ st.set_page_config(
 st.markdown(
     """
 <style>
-/* Uniform white text across all inputs, selectboxes, placeholders, and popovers */
+/* 1. Explicitly override .stApp input and all selectbox text/caret to bright white */
+html body .stApp input,
+html body .stApp textarea,
+html body div[data-testid="stTextInput"] input,
 html body div[data-testid="stSelectbox"] *,
-html body div[data-testid="stTextInput"] *,
 html body div[data-testid="stMultiSelect"] *,
 html body div[data-baseweb="select"] *,
 html body div[data-baseweb="input"] *,
@@ -73,9 +75,10 @@ html body [role="listbox"] *,
 html body [role="option"] * {
     color: #FFFFFF !important;
     -webkit-text-fill-color: #FFFFFF !important;
+    caret-color: #FFFFFF !important;
 }
 
-/* Force dark slate background for input boxes and popovers */
+/* 2. Container dark backgrounds */
 html body div[data-baseweb="input"],
 html body div[data-baseweb="select"] > div,
 html body div[data-baseweb="popover"] ul,
@@ -84,7 +87,14 @@ html body [role="listbox"] {
     background-color: #1E293B !important;
 }
 
-/* Dropdown item hover state */
+/* 3. Dropdown option items background and hover states */
+html body [role="option"],
+html body div[data-baseweb="popover"] li[data-baseweb="option"] {
+    background-color: #1E293B !important;
+    color: #FFFFFF !important;
+    -webkit-text-fill-color: #FFFFFF !important;
+}
+
 html body [role="option"]:hover,
 html body [role="option"][aria-selected="true"],
 html body div[data-baseweb="popover"] li[data-baseweb="option"]:hover,
@@ -92,7 +102,7 @@ html body div[data-baseweb="popover"] li[data-baseweb="option"][aria-selected="t
     background-color: #334155 !important;
 }
 
-/* Placeholder styling */
+/* 4. Placeholder styling */
 html body div[data-baseweb="input"] input::placeholder {
     color: rgba(255, 255, 255, 0.7) !important;
     -webkit-text-fill-color: rgba(255, 255, 255, 0.7) !important;

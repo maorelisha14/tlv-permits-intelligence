@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 from dotenv import load_dotenv
 from supabase import create_client
@@ -298,6 +299,7 @@ def init_supabase():
 EXPECTED_COLUMNS = {
     "id": None, "project_name": "", "developer_name": "", "city": "", "address": "",
     "total_units": None, "is_target_unit_count": False, "price_min": None, "price_max": None, "source_urls": None,
+    "price_per_sqm": None, "sold_units_count": None,
 }
 _URL_RE = re.compile(r"https?://[^\s\"'<>,\]\[{}]+", re.I)
 
@@ -408,6 +410,8 @@ def load_market_data(refresh_bucket: int = 0) -> pd.DataFrame:
     df["total_units"] = pd.to_numeric(df["total_units"], errors="coerce").astype("Int64")
     df["price_min"] = pd.to_numeric(df["price_min"], errors="coerce").astype("Int64")
     df["price_max"] = pd.to_numeric(df["price_max"], errors="coerce").astype("Int64")
+    df["price_per_sqm"] = pd.to_numeric(df["price_per_sqm"], errors="coerce").round().astype("Int64")
+    df["sold_units_count"] = pd.to_numeric(df["sold_units_count"], errors="coerce").round().astype("Int64")
     df["is_target_unit_count"] = df["is_target_unit_count"].fillna(False).astype(bool)
 
     links = df["source_urls"].map(parse_source_urls)
@@ -562,6 +566,33 @@ def fmt_units(v, with_badge: bool = False) -> str:
     return f"{n} יח״ד" + (" · יעד בוטיק" if with_badge and 15 <= n <= 30 else "")
 
 
+def fmt_ppsqm(v) -> str:
+    """מחיר למ"ר -> ₪XX,XXX, or — when unknown."""
+    return "—" if pd.isna(v) else fmt_nis(v)
+
+
+def fmt_sales(sold, total) -> str:
+    """קצב מכירות: '14 מתוך 23 (60.9%)' | '14 עסקאות' | '—'."""
+    if pd.isna(sold) or int(sold) <= 0:
+        return "—"
+    sold = int(sold)
+    if pd.isna(total) or int(total) <= 0:
+        return f"{sold} עסקאות"
+    return f"{sold} מתוך {int(total)} ({round(sold / int(total) * 100, 1)}%)"
+
+
+def sold_deals_info(row) -> dict:
+    """raw_data['project_sold_deals'] (dict or JSON string) -> dict, {} when absent."""
+    raw = row.get("raw_data")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (ValueError, TypeError):
+            return {}
+    info = raw.get("project_sold_deals") if isinstance(raw, dict) else None
+    return info if isinstance(info, dict) else {}
+
+
 def dev_name(v: str) -> str:
     return v if v else "יזם לא צוין"
 
@@ -615,6 +646,8 @@ def detail_html(row) -> str:
         + cell("כתובת", html.escape(row["address"] or "—"))
         + cell("מספר יחידות דיור", html.escape(fmt_units(row["total_units"])) + badge)
         + cell("טווח מחירים", html.escape(fmt_price(row["price_min"], row["price_max"])))
+        + cell('מחיר למ"ר', html.escape(fmt_ppsqm(row["price_per_sqm"])))
+        + cell("קצב מכירות / נמכרו", html.escape(fmt_sales(row["sold_units_count"], row["total_units"])))
         + cell("מזהה", html.escape(str(row["id"])))
         + cell("מקורות", links_html(row) or "אין קישור למקור")
         + "</div></div>"
@@ -631,6 +664,8 @@ def build_export(data: pd.DataFrame) -> pd.DataFrame:
         "יעד בוטיק": data["is_target"].map({True: "כן", False: "לא"}),
         "מחיר מינימום": data["price_min"],
         "מחיר מקסימום": data["price_max"],
+        'מחיר למ"ר': data["price_per_sqm"].map(fmt_ppsqm),
+        "קצב מכירות / נמכרו": [fmt_sales(s, t) for s, t in zip(data["sold_units_count"], data["total_units"])],
         "מדלן": data["madlan_url"],
         "יד 2": data["yad2_url"],
         "מאוחד": data["is_merged"].map({True: "כן", False: "לא"}),
@@ -662,6 +697,76 @@ def to_excel_bytes(data: pd.DataFrame):
 # ---------------------------------------------------------
 # 7. Main dashboard
 # ---------------------------------------------------------
+CHART_FONT = "Heebo, 'Segoe UI', Arial, sans-serif"
+DEV_PLACEHOLDERS = {"", "יזמות פרטית", "None", "none", "nan", "לא צוין"}
+DEV_METRIC_COUNT = "מספר פרויקטים"
+DEV_METRIC_UNITS = "מספר יח״ד"
+
+
+def ranking_chart(data: pd.DataFrame, col: str, metric: str, height: int = 400):
+    # Top-10 horizontal bar ranking of `col` (developer_name / city) over the filtered data.
+    # Returns None when there is nothing to rank.
+    ranked = data[~data[col].astype(str).str.strip().isin(DEV_PLACEHOLDERS)]
+    if ranked.empty:
+        return None
+    by_units = metric == DEV_METRIC_UNITS
+    if by_units:
+        agg = ranked.groupby(col)["total_units"].sum()
+        agg = agg[agg > 0]
+    else:
+        agg = ranked.groupby(col).size()
+    if agg.empty:
+        return None
+    top = agg.astype(int).sort_values(ascending=False).head(10).sort_values(ascending=True)
+    unit_lbl = "יח״ד" if by_units else "פרויקטים"
+    fig = go.Figure(go.Bar(
+        x=top.values, y=top.index, orientation="h",
+        marker=dict(color=top.values, colorscale=[[0.0, "#99F6E4"], [1.0, TEAL_HOVER]], line=dict(width=0)),
+        text=top.values, texttemplate="%{x:,}", textposition="outside",
+        textfont=dict(color=NAVY, size=12), cliponaxis=False,
+        hovertemplate="<b>%{y}</b><br>%{x:,} " + unit_lbl + "<extra></extra>",
+    ))
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family=CHART_FONT, color=NAVY, size=13),
+        margin=dict(l=8, r=8, t=8, b=8), height=height, bargap=0.35,
+        hoverlabel=dict(bgcolor=NAVY, bordercolor=TEAL, font=dict(family=CHART_FONT, color="#FFFFFF", size=13)),
+    )
+    max_val = float(top.max()) or 1.0
+    fig.update_xaxes(range=[max_val * 1.18, 0], visible=False, showgrid=False, zeroline=False, title=None)
+    fig.update_yaxes(side="right", showgrid=False, zeroline=False, showline=False, ticks="",
+                     automargin=True, tickfont=dict(color=NAVY, size=13), title=None)
+    return fig
+
+
+def render_analytics(data: pd.DataFrame) -> None:
+    col_city, col_dev = st.columns(2)
+    with col_city:
+        with st.container(border=True):
+            title_slot = st.empty()
+            metric = st.radio("מדד", [DEV_METRIC_COUNT, DEV_METRIC_UNITS], horizontal=True,
+                              key="city_chart_metric", label_visibility="collapsed")
+            title_slot.markdown(
+                '<div class="card-title">' + ("מספר פרויקטים לפי עיר" if metric == DEV_METRIC_COUNT else "יחידות דיור לפי עיר")
+                + '</div><div class="card-sub">10 הערים המובילות בסינון הנוכחי</div>', unsafe_allow_html=True)
+            fig = ranking_chart(data, "city", metric)
+            if fig is None:
+                st.info("אין נתוני ערים להצגה עבור הסינון הנוכחי.")
+            else:
+                st.plotly_chart(fig, config={"displayModeBar": False}, **STRETCH)
+    with col_dev:
+        with st.container(border=True):
+            st.markdown('<div class="card-title">10 היזמים המובילים</div>'
+                        '<div class="card-sub">דירוג יזמים בסינון הנוכחי (ללא יזמות פרטית / לא צוין)</div>',
+                        unsafe_allow_html=True)
+            metric = st.radio("מדד", [DEV_METRIC_COUNT, DEV_METRIC_UNITS], horizontal=True,
+                              key="dev_chart_metric", label_visibility="collapsed")
+            fig = ranking_chart(data, "developer_name", metric)
+            if fig is None:
+                st.info("אין נתוני יזמים להצגה עבור הסינון הנוכחי.")
+            else:
+                st.plotly_chart(fig, config={"displayModeBar": False}, **STRETCH)
+
 def render_dashboard(data: pd.DataFrame) -> None:
     total_all = len(df_raw)
 
@@ -695,89 +800,121 @@ def render_dashboard(data: pd.DataFrame) -> None:
         _settings()
         return
 
-    # controls: view mode + sorting + export
-    c_view, c_sort, c_csv, c_xlsx = st.columns([2, 3, 2, 2], **VBOTTOM)
-    with c_view:
-        view = st.radio("תצוגה", VIEW_OPTIONS, horizontal=True, key="opt_view")
-    with c_sort:
-        sort_label = st.selectbox("מיון לפי", list(SORT_OPTIONS.keys()), key="opt_sort")
-    sort_col, ascending = SORT_OPTIONS[sort_label]
-    if sort_col in ("project_name", "developer_name", "city"):
-        key = data[sort_col].str.lower()
-        data = data.assign(_k=key).sort_values(["_k", "id"], ascending=[ascending, True]).drop(columns="_k")
-    else:
-        data = data.sort_values([sort_col, "id"], ascending=[ascending, True], na_position="last")
+    tab_feed, tab_analytics = st.tabs(["📋 רשימת פרויקטים", "📊 ניתוח מגמות ושוק"])
+    with tab_analytics:
+        render_analytics(data)
 
-    export_df = build_export(data)
-    with c_csv:
-        st.download_button("⬇️ ייצוא CSV", to_csv_bytes(export_df), file_name="market_projects.csv",
-                           mime="text/csv; charset=utf-8", **STRETCH)
-    with c_xlsx:
-        xlsx = to_excel_bytes(export_df)
-        if xlsx:
-            st.download_button("⬇️ ייצוא Excel", xlsx, file_name="market_projects.xlsx",
-                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", **STRETCH)
+    with tab_feed:
+        # controls: view mode + sorting + export
+        c_view, c_sort, c_csv, c_xlsx = st.columns([2, 3, 2, 2], **VBOTTOM)
+        with c_view:
+            view = st.radio("תצוגה", VIEW_OPTIONS, horizontal=True, key="opt_view")
+        with c_sort:
+            sort_label = st.selectbox("מיון לפי", list(SORT_OPTIONS.keys()), key="opt_sort")
+        sort_col, ascending = SORT_OPTIONS[sort_label]
+        if sort_col in ("project_name", "developer_name", "city"):
+            key = data[sort_col].str.lower()
+            data = data.assign(_k=key).sort_values(["_k", "id"], ascending=[ascending, True]).drop(columns="_k")
         else:
-            st.caption("ייצוא Excel דורש התקנת openpyxl")
+            data = data.sort_values([sort_col, "id"], ascending=[ascending, True], na_position="last")
 
-    if view == "טבלה":
-        table = pd.DataFrame({
-            "שם פרויקט": data["project_name"],
-            "יזם": data["developer_name"].map(dev_name),
-            "עיר": data["city"],
-            "כתובת": data["address"],
-            "יח״ד": data["total_units"].map(lambda v: "לא צוין" if pd.isna(v) else (f"{int(v)} · יעד בוטיק" if 15 <= int(v) <= 30 else str(int(v)))),
-            "מחיר": [fmt_price(a, b) for a, b in zip(data["price_min"], data["price_max"])],
-            "מדלן": data["madlan_url"],
-            "יד 2": data["yad2_url"],
-            "מאוחד": data["is_merged"].map({True: "מאוחד", False: ""}),
-        })
-        st.dataframe(
-            table,
-            column_config={
-                "שם פרויקט": st.column_config.TextColumn("שם פרויקט", width=col_width(210, "large"), **ALIGN_RIGHT),
-                "יזם": st.column_config.TextColumn("יזם", width=col_width(170, "medium"), **ALIGN_RIGHT),
-                "עיר": st.column_config.TextColumn("עיר", width=col_width(110, "small"), **ALIGN_RIGHT),
-                "כתובת": st.column_config.TextColumn("כתובת", width=col_width(190, "medium"), **ALIGN_RIGHT),
-                "יח״ד": st.column_config.TextColumn("יח״ד", width=col_width(120, "small"), **ALIGN_RIGHT),
-                "מחיר": st.column_config.TextColumn("מחיר", width=col_width(170, "medium"), **ALIGN_RIGHT),
-                "מדלן": st.column_config.LinkColumn("מדלן", display_text="מדלן 🔗", width=col_width(80, "small"), **ALIGN_RIGHT),
-                "יד 2": st.column_config.LinkColumn("יד 2", display_text="יד 2 🔗", width=col_width(80, "small"), **ALIGN_RIGHT),
-                "מאוחד": st.column_config.TextColumn("מאוחד", width=col_width(80, "small"), **ALIGN_RIGHT),
-            },
-            hide_index=True,
-            height=int(max(140, min(620, 40 + len(table) * 35))),
-            **STRETCH,
-        )
-        st.markdown(
-            '<div class="table-caption">' + f"מוצגים {len(table):,} פרויקטים · לחיצה על כותרת עמודה ממיינת" + "</div>",
-            unsafe_allow_html=True,
-        )
-    else:
-        pages = max(1, -(-len(data) // CARDS_PER_PAGE))
-        if pages > 1:
-            page = st.number_input(f"עמוד (מתוך {pages})", min_value=1, max_value=pages, value=1, step=1, key="opt_page")
+        export_df = build_export(data)
+        with c_csv:
+            st.download_button("⬇️ ייצוא CSV", to_csv_bytes(export_df), file_name="market_projects.csv",
+                               mime="text/csv; charset=utf-8", **STRETCH)
+        with c_xlsx:
+            xlsx = to_excel_bytes(export_df)
+            if xlsx:
+                st.download_button("⬇️ ייצוא Excel", xlsx, file_name="market_projects.xlsx",
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", **STRETCH)
+            else:
+                st.caption("ייצוא Excel דורש התקנת openpyxl")
+
+        if view == "טבלה":
+            table = pd.DataFrame({
+                "שם פרויקט": data["project_name"],
+                "יזם": data["developer_name"].map(dev_name),
+                "עיר": data["city"],
+                "כתובת": data["address"],
+                "יח״ד": data["total_units"].map(lambda v: "לא צוין" if pd.isna(v) else (f"{int(v)} · יעד בוטיק" if 15 <= int(v) <= 30 else str(int(v)))),
+                "מחיר": [fmt_price(a, b) for a, b in zip(data["price_min"], data["price_max"])],
+                'מחיר למ"ר': data["price_per_sqm"].map(fmt_ppsqm),
+                "קצב מכירות / נמכרו": [fmt_sales(s, t) for s, t in zip(data["sold_units_count"], data["total_units"])],
+                "מדלן": data["madlan_url"],
+                "יד 2": data["yad2_url"],
+                "מאוחד": data["is_merged"].map({True: "מאוחד", False: ""}),
+            })
+            st.dataframe(
+                table,
+                column_config={
+                    "שם פרויקט": st.column_config.TextColumn("שם פרויקט", width=col_width(210, "large"), **ALIGN_RIGHT),
+                    "יזם": st.column_config.TextColumn("יזם", width=col_width(170, "medium"), **ALIGN_RIGHT),
+                    "עיר": st.column_config.TextColumn("עיר", width=col_width(110, "small"), **ALIGN_RIGHT),
+                    "כתובת": st.column_config.TextColumn("כתובת", width=col_width(190, "medium"), **ALIGN_RIGHT),
+                    "יח״ד": st.column_config.TextColumn("יח״ד", width=col_width(120, "small"), **ALIGN_RIGHT),
+                    "מחיר": st.column_config.TextColumn("מחיר", width=col_width(170, "medium"), **ALIGN_RIGHT),
+                    'מחיר למ"ר': st.column_config.TextColumn('מחיר למ"ר', width=col_width(110, "small"), **ALIGN_RIGHT),
+                    "קצב מכירות / נמכרו": st.column_config.TextColumn("קצב מכירות / נמכרו", width=col_width(160, "medium"), **ALIGN_RIGHT),
+                    "מדלן": st.column_config.LinkColumn("מדלן", display_text="מדלן 🔗", width=col_width(80, "small"), **ALIGN_RIGHT),
+                    "יד 2": st.column_config.LinkColumn("יד 2", display_text="יד 2 🔗", width=col_width(80, "small"), **ALIGN_RIGHT),
+                    "מאוחד": st.column_config.TextColumn("מאוחד", width=col_width(80, "small"), **ALIGN_RIGHT),
+                },
+                hide_index=True,
+                height=int(max(140, min(620, 40 + len(table) * 35))),
+                **STRETCH,
+            )
+            st.markdown(
+                '<div class="table-caption">' + f"מוצגים {len(table):,} פרויקטים · לחיצה על כותרת עמודה ממיינת" + "</div>",
+                unsafe_allow_html=True,
+            )
         else:
-            page = 1
-        start = (int(page) - 1) * CARDS_PER_PAGE
-        chunk = data.iloc[start:start + CARDS_PER_PAGE]
-        st.markdown('<div class="cards-grid">' + "".join(card_html(r) for _, r in chunk.iterrows()) + "</div>",
-                    unsafe_allow_html=True)
-        st.markdown(
-            '<div class="table-caption">' + f"מוצגים {start + 1:,}–{start + len(chunk):,} מתוך {len(data):,} פרויקטים" + "</div>",
-            unsafe_allow_html=True,
-        )
+            pages = max(1, -(-len(data) // CARDS_PER_PAGE))
+            if pages > 1:
+                page = st.number_input(f"עמוד (מתוך {pages})", min_value=1, max_value=pages, value=1, step=1, key="opt_page")
+            else:
+                page = 1
+            start = (int(page) - 1) * CARDS_PER_PAGE
+            chunk = data.iloc[start:start + CARDS_PER_PAGE]
+            st.markdown('<div class="cards-grid">' + "".join(card_html(r) for _, r in chunk.iterrows()) + "</div>",
+                        unsafe_allow_html=True)
+            st.markdown(
+                '<div class="table-caption">' + f"מוצגים {start + 1:,}–{start + len(chunk):,} מתוך {len(data):,} פרויקטים" + "</div>",
+                unsafe_allow_html=True,
+            )
 
-    # detail view
-    st.markdown("<div style='height: 10px'></div>", unsafe_allow_html=True)
-    with st.expander("🔍 פרטי פרויקט", expanded=False):
-        options = list(data.index[:2000])
-        labels = {
-            i: f"{data.at[i, 'project_name'] or 'ללא שם'} — {data.at[i, 'city'] or '—'}" for i in options
-        }
-        pick = st.selectbox("בחר פרויקט להצגה", options, format_func=lambda i: labels[i], key="opt_detail")
-        if pick is not None:
-            st.markdown(detail_html(data.loc[pick]), unsafe_allow_html=True)
+        # detail view
+        st.markdown("<div style='height: 10px'></div>", unsafe_allow_html=True)
+        with st.expander("🔍 פרטי פרויקט", expanded=False):
+            options = list(data.index[:2000])
+            labels = {
+                i: f"{data.at[i, 'project_name'] or 'ללא שם'} — {data.at[i, 'city'] or '—'}" for i in options
+            }
+            pick = st.selectbox("בחר פרויקט להצגה", options, format_func=lambda i: labels[i], key="opt_detail")
+            if pick is not None:
+                st.markdown(detail_html(data.loc[pick]), unsafe_allow_html=True)
+            sd = sold_deals_info(data.loc[pick])
+            deals = sd.get("deals") or []
+            if deals:
+                st.markdown(
+                    f'<div class="card-sub">עסקאות מאומתות בפרויקט: {len(deals)} · מחיר למ"ר (מינ׳ / חציון / מקס׳): '
+                    f'{fmt_ppsqm(sd.get("price_per_sqm_min") or pd.NA)} / {fmt_ppsqm(sd.get("price_per_sqm_median") or pd.NA)} / '
+                    f'{fmt_ppsqm(sd.get("price_per_sqm_max") or pd.NA)}</div>',
+                    unsafe_allow_html=True,
+                )
+                st.dataframe(
+                    pd.DataFrame({
+                        "תאריך עסקה": [d.get("deal_date") for d in deals],
+                        "כתובת": [d.get("address") for d in deals],
+                        "קומה": [d.get("floor") for d in deals],
+                        'מ"ר': [d.get("sqm") for d in deals],
+                        "מחיר": [fmt_nis(d["price"]) if d.get("price") else "—" for d in deals],
+                        'מחיר למ"ר': [fmt_nis(d["price_per_sqm"]) if d.get("price_per_sqm") else "—" for d in deals],
+                        "שנת בנייה": [d.get("build_year") for d in deals],
+                    }),
+                    hide_index=True, **STRETCH,
+                )
+            elif sd:
+                st.caption("נבדקו עסקאות באזור – לא נמצאו עסקאות מאומתות בכתובת הפרויקט.")
 
     _settings()
 

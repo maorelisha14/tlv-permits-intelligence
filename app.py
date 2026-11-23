@@ -1,6 +1,7 @@
 ﻿import html
 import inspect
 import os
+import re
 import time
 from datetime import date, timedelta
 from pathlib import Path
@@ -11,6 +12,7 @@ import streamlit as st
 from dotenv import load_dotenv
 from supabase import create_client
 
+from tlv_linker import address_key as tlv_address_key
 from utils import clean_street_address
 
 # ---------------------------------------------------------
@@ -432,6 +434,50 @@ def load_permit_data(refresh_bucket: int = 0):
     df["address"] = df["address"].fillna("").astype(str)
     df["plan_number"] = df["plan_number"].fillna("").astype(str)
     df["source_url"] = df["source_url"].where(df["source_url"].notna() & (df["source_url"] != ""), None)
+    return attach_market_data(df, supabase)
+
+
+MARKET_TABLE = "market_target_projects"
+MARKET_COLS = "id,price_min,price_max,price_range_text,price_per_sqm,sold_units_count,total_units,source_url,source_urls"
+MARKET_STATUS_ACTIVE, MARKET_STATUS_NONE = "בשיווק פעיל", "טרם יצא לשיווק"
+
+
+def _fmt_price_range(m: dict) -> str:
+    lo, hi = m.get("price_min"), m.get("price_max")
+    if lo and hi and lo != hi:
+        return f"₪{lo:,.0f} – ₪{hi:,.0f}"
+    if lo or hi:
+        return f"₪{(lo or hi):,.0f}"
+    return m.get("price_range_text") or ""
+
+
+def attach_market_data(df: pd.DataFrame, supabase) -> pd.DataFrame:
+    """Join the linked market_target_projects row (tel_aviv_permits.market_project_id) onto the permit rows."""
+    cols = ["market_status", "market_price", "market_ppsqm", "market_sales", "market_yad2", "market_madlan"]
+    for c in cols:
+        df[c] = None
+    df["market_status"] = MARKET_STATUS_NONE
+    if "market_project_id" not in df.columns:
+        return df
+    ids = [i for i in df["market_project_id"].dropna().unique().tolist() if i]
+    market: dict = {}
+    for i in range(0, len(ids), 100):
+        for m in supabase.table(MARKET_TABLE).select(MARKET_COLS).in_("id", ids[i:i + 100]).execute().data or []:
+            market[m["id"]] = m
+    for idx, pid in df["market_project_id"].items():
+        m = market.get(pid) if pid else None
+        if not m:
+            continue
+        urls = [u for u in [m.get("source_url"), *(m.get("source_urls") or [])] if isinstance(u, str) and u]
+        df.at[idx, "market_status"] = MARKET_STATUS_ACTIVE
+        df.at[idx, "market_price"] = _fmt_price_range(m) or None
+        df.at[idx, "market_ppsqm"] = m.get("price_per_sqm")
+        total, sold = m.get("total_units"), m.get("sold_units_count")
+        if total and sold is not None:
+            df.at[idx, "market_sales"] = f"{sold}/{total}"
+        df.at[idx, "market_yad2"] = next((u for u in urls if "yad2" in u), None)
+        df.at[idx, "market_madlan"] = next((u for u in urls if "madlan" in u), None)
+    df["market_ppsqm"] = pd.to_numeric(df["market_ppsqm"], errors="coerce")
     return df
 
 
@@ -587,6 +633,12 @@ selected_statuses = sb.multiselect(
     placeholder="בחר סטטוס",
     label_visibility="collapsed",
 )
+sb.markdown('<div class="sb-divider"></div>', unsafe_allow_html=True)
+
+# --- g. commercial status (linked Yad2 / Madlan project)
+sb.markdown('<div class="sb-section">🏷️ סטטוס שיווק</div>', unsafe_allow_html=True)
+market_filter = sb.radio("סטטוס שיווק", ["הכל", MARKET_STATUS_ACTIVE, MARKET_STATUS_NONE], horizontal=True,
+                         label_visibility="collapsed")
 # ---------------------------------------------------------
 # 5. Filtering (logic unchanged)
 # ---------------------------------------------------------
@@ -613,6 +665,9 @@ if selected_neighborhoods:
 
 if selected_developers:
     df = df[df["developer_name"].isin(selected_developers)]
+
+if market_filter != "הכל":
+    df = df[df["market_status"] == market_filter]
 
 if not df.empty:
     df = df[(df["apartment_count"] >= selected_units[0]) & (df["apartment_count"] <= selected_units[1])]
@@ -642,13 +697,56 @@ def style_figure(fig: go.Figure, height: int) -> go.Figure:
     return fig
 
 
-def neighborhood_chart(data: pd.DataFrame, grid: bool, height: int) -> go.Figure:
+_GUSH_RE = re.compile(r"(?:גוש|חלקות|חלקה|תת[\s-]*חלקה)\s*[\d\s,/\-]*")
+
+
+def _building_key(address, file_name, row_id) -> str:
+    """Normalized building key (tlv_linker street/number parsing); falls back to file_name, then row id."""
+    if isinstance(address, str) and address.strip():
+        cleaned = _GUSH_RE.sub(" ", address)
+        key = tlv_address_key({"address": cleaned})
+        if key:
+            return "a:" + repr(key)
+    if isinstance(file_name, str) and file_name.strip():
+        return "f:" + file_name.strip()
+    return "i:" + str(row_id)
+
+
+def dedupe_buildings(data: pd.DataFrame) -> pd.DataFrame:
+    """One record per building: the latest decision, carrying the max apartment_count seen for that building."""
+    if data.empty:
+        return data
+    fn = data["file_name"] if "file_name" in data.columns else pd.Series([None] * len(data), index=data.index)
+    ids = data["id"] if "id" in data.columns else pd.Series(data.index, index=data.index)
+    keys = pd.Series([_building_key(a, f, i) for a, f, i in zip(data["address"], fn, ids)], index=data.index)
+    work = data.assign(_bkey=keys).sort_values("meeting_date", ascending=True, na_position="first", kind="stable")
+    max_units = work.groupby("_bkey")["apartment_count"].transform("max")
+    work = work.assign(apartment_count=max_units)
+    return work.drop_duplicates("_bkey", keep="last").drop(columns="_bkey")
+
+
+NEIGH_METRIC_UNITS = "יח״ד לפי שכונה"
+NEIGH_METRIC_COUNT = "מספר פרויקטים לפי שכונה"
+
+
+def neighborhood_chart(data: pd.DataFrame, metric: str, grid: bool, height: int):
     # Computed fresh from the filtered DataFrame passed in (no cache, no globals).
-    # Top 10 by units; ascending order so the largest bar renders at the top of the horizontal chart.
-    df_top10 = (
-        data.groupby("neighborhood")["apartment_count"].sum().reset_index()
-        .sort_values("apartment_count", ascending=False).head(10)
-    )
+    # Top 10; ascending order so the largest bar renders at the top of the horizontal chart.
+    # Both metrics run on unique buildings (repeated hearings for one building collapse into one record).
+    by_units = metric == NEIGH_METRIC_UNITS
+    buildings = dedupe_buildings(data)
+    named = buildings[~buildings["neighborhood"].astype(str).str.strip().isin({"", "None", "nan"})]
+    if named.empty:
+        return None
+    if by_units:
+        agg = named.groupby("neighborhood")["apartment_count"].sum()
+        agg = agg[agg > 0]
+    else:
+        agg = named.groupby("neighborhood").size()
+    if agg.empty:
+        return None
+    df_top10 = agg.rename("apartment_count").reset_index().sort_values("apartment_count", ascending=False).head(10)
+    unit_lbl = "יח״ד" if by_units else "פרויקטים"
     by_neigh = df_top10.sort_values("apartment_count", ascending=True)
     fig = go.Figure(
         go.Bar(
@@ -665,13 +763,66 @@ def neighborhood_chart(data: pd.DataFrame, grid: bool, height: int) -> go.Figure
             textposition="outside",
             textfont=dict(color=NAVY, size=12),
             cliponaxis=False,
-            hovertemplate="<b>%{y}</b><br>%{x:,} יח״ד<extra></extra>",
+            hovertemplate="<b>%{y}</b><br>%{x:,} " + unit_lbl + "<extra></extra>",
         )
     )
     style_figure(fig, height)
     fig.update_layout(bargap=0.35)
+    max_val = float(by_neigh["apartment_count"].max() or 0) or 1.0
     fig.update_xaxes(
-        autorange="reversed",  # bars grow right-to-left for RTL reading
+        range=[max_val * 1.18, 0],  # reversed (RTL) with ~18% headroom so outer labels aren't clipped
+        showgrid=grid, gridcolor="#E2E8F0", gridwidth=1, zeroline=False, showline=False,
+        visible=grid, tickfont=dict(color=SLATE_SOFT, size=11), title=None,
+    )
+    fig.update_yaxes(
+        side="right", showgrid=False, zeroline=False, showline=False, ticks="",
+        automargin=True, tickfont=dict(color=NAVY, size=13), title=None,
+    )
+    return fig
+
+
+DEV_PLACEHOLDERS = {"", "לא צוין", "None", "none", "nan", "יזמות פרטית"}
+DEV_METRIC_COUNT = "מספר החלטות"
+DEV_METRIC_UNITS = "מספר יח״ד"
+
+
+def developer_chart(data: pd.DataFrame, metric: str, grid: bool, height: int):
+    # Top-10 developers over the filtered data; returns None when there is nothing to rank.
+    devs = data[~data["developer_name"].astype(str).str.strip().isin(DEV_PLACEHOLDERS)]
+    if devs.empty:
+        return None
+    by_units = metric == DEV_METRIC_UNITS
+    if by_units:
+        # units are summed over unique buildings; decision counts below stay per filtered decision
+        b = dedupe_buildings(data)
+        b = b[~b["developer_name"].astype(str).str.strip().isin(DEV_PLACEHOLDERS)]
+        agg = b.groupby("developer_name")["apartment_count"].sum()
+        agg = agg[agg > 0]
+    else:
+        agg = devs.groupby("developer_name").size()
+    if agg.empty:
+        return None
+    top = agg.sort_values(ascending=False).head(10).sort_values(ascending=True)
+    unit_lbl = "יח״ד" if by_units else "החלטות"
+    fig = go.Figure(
+        go.Bar(
+            x=top.values,
+            y=top.index,
+            orientation="h",
+            marker=dict(color=top.values, colorscale=[[0.0, "#BFDBFE"], [1.0, INDIGO]], line=dict(width=0)),
+            text=top.values,
+            texttemplate="%{x:,}",
+            textposition="outside",
+            textfont=dict(color=NAVY, size=12),
+            cliponaxis=False,
+            hovertemplate="<b>%{y}</b><br>%{x:,} " + unit_lbl + "<extra></extra>",
+        )
+    )
+    style_figure(fig, height)
+    fig.update_layout(bargap=0.35)
+    max_val = float(top.max()) or 1.0
+    fig.update_xaxes(
+        range=[max_val * 1.18, 0],
         showgrid=grid, gridcolor="#E2E8F0", gridwidth=1, zeroline=False, showline=False,
         visible=grid, tickfont=dict(color=SLATE_SOFT, size=11), title=None,
     )
@@ -744,19 +895,6 @@ def render_dashboard(df: pd.DataFrame) -> None:
     with_units = data[data["apartment_count"] > 0] if not data.empty else data
     avg_units = (with_units["apartment_count"].mean() if not with_units.empty else 0)
 
-    if not data.empty and len(data["neighborhood"].mode()) > 0:
-        top_neigh = data["neighborhood"].mode()[0]
-        top_neigh_n = int((data["neighborhood"] == top_neigh).sum())
-    else:
-        top_neigh, top_neigh_n = "-", 0
-
-    dev_data = data[data["developer_name"] != "לא צוין"] if not data.empty else pd.DataFrame()
-    if not dev_data.empty and len(dev_data["developer_name"].mode()) > 0:
-        top_dev = dev_data["developer_name"].mode()[0]
-        top_dev_n = int((dev_data["developer_name"] == top_dev).sum())
-    else:
-        top_dev, top_dev_n = "-", 0
-
     pct = (len(data) / total_all * 100) if total_all else 0
     # Header row: ONLY the two summary metrics. "שכונה מובילה" / "יזם בולט" live in the trends tab below.
     c1, c2 = st.columns(2)
@@ -777,14 +915,32 @@ def render_dashboard(df: pd.DataFrame) -> None:
             display_df = data[[
                 "meeting_date", "address", "neighborhood", "developer_name",
                 "apartment_count", "decision_status", "plan_number", "source_url",
+                "market_status", "market_price", "market_ppsqm", "market_sales", "market_yad2", "market_madlan",
             ]].sort_values("meeting_date", ascending=False).copy()
-            display_df.columns = ["תאריך החלטת ועדה", "כתובת", "שכונה", "יזם", "יח״ד", "החלטה", "מספר תוכנית", "קישור למסמך"]
+            display_df.columns = ["תאריך החלטת ועדה", "כתובת", "שכונה", "יזם", "יח״ד", "החלטה", "מספר תוכנית", "קישור למסמך",
+                                  "סטטוס שיווק", "טווח מחירים", "₪/מ\"ר", "התקדמות מכירות", "Yad2", "Madlan"]
             display_df["כתובת"] = display_df["כתובת"].map(clean_street_address)  # [רחוב] [מספר], also for legacy rows
 
-            grid_kwargs = {"row_height": 34} if compact and _ST_VERSION >= (1, 50) else {}
-            st.dataframe(
-                display_df,
-                column_config={
+            # Market-enrichment columns are shown ONLY for the "בשיווק פעיל" view.
+            market_cols = ["Madlan", "Yad2", "התקדמות מכירות", "₪/מ\"ר", "טווח מחירים"]
+            show_market = market_filter == MARKET_STATUS_ACTIVE
+            if not show_market:
+                display_df = display_df.drop(columns=market_cols)
+            else:
+                # numeric ₪/מ"ר -> formatted text so empty cells can show "—"
+                display_df["₪/מ\"ר"] = display_df["₪/מ\"ר"].map(
+                    lambda v: f"{int(round(v)):,}" if pd.notna(v) and str(v).strip() not in ("", "None", "nan") else None)
+
+            # No raw "None"/NaN in text cells -> em-dash (link columns stay empty: "—" is not a valid URL)
+            link_cols = {"קישור למסמך", "Yad2", "Madlan"}
+            for _c in display_df.columns:
+                if _c in link_cols or _c in ("תאריך החלטת ועדה", "יח״ד"):
+                    continue
+                display_df[_c] = (display_df[_c].astype(object)
+                                  .where(display_df[_c].notna(), "—")
+                                  .map(lambda v: "—" if str(v).strip() in ("", "None", "nan", "NaN", "<NA>") else v))
+
+            all_config = {
                     "תאריך החלטת ועדה": st.column_config.DateColumn("תאריך החלטת ועדה", format="DD/MM/YYYY", width=col_width(150, "medium"), **ALIGN_RIGHT),
                     "כתובת": st.column_config.TextColumn("כתובת", width=col_width(215, "large"), **ALIGN_RIGHT),
                     "שכונה": st.column_config.TextColumn("שכונה", width=col_width(105, "small"), **ALIGN_RIGHT),
@@ -793,7 +949,17 @@ def render_dashboard(df: pd.DataFrame) -> None:
                     "החלטה": st.column_config.TextColumn("החלטה", width=col_width(110, "small"), **ALIGN_RIGHT),
                     "מספר תוכנית": st.column_config.TextColumn("מספר תוכנית", width=col_width(105, "small"), **ALIGN_RIGHT),
                     "קישור למסמך": st.column_config.LinkColumn("מסמך מקור", display_text="PDF 📄", width=col_width(80, "small"), **ALIGN_RIGHT),
-                },
+                    "סטטוס שיווק": st.column_config.TextColumn("סטטוס שיווק", width=col_width(110, "small"), **ALIGN_RIGHT),
+                    "טווח מחירים": st.column_config.TextColumn("טווח מחירים", width=col_width(150, "medium"), **ALIGN_RIGHT),
+                    "₪/מ\"ר": st.column_config.TextColumn("₪/מ\"ר", width=col_width(80, "small"), **ALIGN_RIGHT),
+                    "התקדמות מכירות": st.column_config.TextColumn("התקדמות מכירות", width=col_width(100, "small"), **ALIGN_RIGHT),
+                    "Yad2": st.column_config.LinkColumn("Yad2", display_text="Yad2 🔗", width=col_width(75, "small"), **ALIGN_RIGHT),
+                    "Madlan": st.column_config.LinkColumn("Madlan", display_text="Madlan 🔗", width=col_width(85, "small"), **ALIGN_RIGHT),
+            }
+            grid_kwargs = {"row_height": 34} if compact and _ST_VERSION >= (1, 50) else {}
+            st.dataframe(
+                display_df,
+                column_config={k: v for k, v in all_config.items() if k in display_df.columns},
                 hide_index=True,
                 height=int(max(140, min(560 if not compact else 420, 40 + len(display_df) * (34 if compact else 35)))),
                 **grid_kwargs,
@@ -810,27 +976,40 @@ def render_dashboard(df: pd.DataFrame) -> None:
         if data.empty:
             st.info("אין נתונים להצגה בגרפים עבור הסינון הנוכחי.")
         else:
-            # leaders (moved here from the header row)
-            lead_a, lead_b = st.columns(2)
-            lead_a.markdown(kpi_card("שכונה מובילה", str(top_neigh), f"{top_neigh_n} החלטות" if top_neigh_n else "—", EMERALD, True),
-                            unsafe_allow_html=True)
-            lead_b.markdown(kpi_card("יזם בולט", str(top_dev), f"{top_dev_n} החלטות" if top_dev_n else "—", SLATE, True),
-                            unsafe_allow_html=True)
-            st.markdown("<div style=""height: 12px""></div>", unsafe_allow_html=True)
-
             col_a, col_b = st.columns(2)
             with col_a:
                 with st.container(border=True):
-                    st.markdown('<div class="card-title">יחידות דיור לפי שכונה</div>'
-                                '<div class="card-sub">10 השכונות המובילות בסינון הנוכחי</div>', unsafe_allow_html=True)
-                    st.plotly_chart(neighborhood_chart(data, show_grid, chart_h),
-                                    config={"displayModeBar": False}, **STRETCH)
+                    title_slot = st.empty()
+                    neigh_metric = st.radio("מדד", [NEIGH_METRIC_UNITS, NEIGH_METRIC_COUNT], horizontal=True,
+                                            key="neighborhood_chart_metric", label_visibility="collapsed")
+                    title_slot.markdown(
+                        '<div class="card-title">'
+                        + ("יחידות דיור לפי שכונה" if neigh_metric == NEIGH_METRIC_UNITS else "מספר פרויקטים לפי שכונה")
+                        + '</div><div class="card-sub">10 השכונות המובילות בסינון הנוכחי</div>',
+                        unsafe_allow_html=True)
+                    neigh_fig = neighborhood_chart(data, neigh_metric, show_grid, chart_h)
+                    if neigh_fig is None:
+                        st.info("אין נתונים להצגה עבור הסינון הנוכחי.")
+                    else:
+                        st.plotly_chart(neigh_fig, config={"displayModeBar": False}, **STRETCH)
             with col_b:
                 with st.container(border=True):
                     st.markdown('<div class="card-title">התפלגות סטטוס החלטות</div>'
                                 '<div class="card-sub">חלוקה לפי תוצאת הדיון</div>', unsafe_allow_html=True)
                     st.plotly_chart(status_chart(data, chart_h),
                                     config={"displayModeBar": False}, **STRETCH)
+
+            st.markdown("<div style=""height: 12px""></div>", unsafe_allow_html=True)
+            with st.container(border=True):
+                st.markdown('<div class="card-title">10 היזמים המובילים</div>'
+                            '<div class="card-sub">דירוג יזמים בסינון הנוכחי</div>', unsafe_allow_html=True)
+                dev_metric = st.radio("מדד", [DEV_METRIC_COUNT, DEV_METRIC_UNITS], horizontal=True,
+                                      key="dev_chart_metric", label_visibility="collapsed")
+                dev_fig = developer_chart(data, dev_metric, show_grid, chart_h)
+                if dev_fig is None:
+                    st.info("אין נתוני יזמים להצגה עבור הסינון הנוכחי.")
+                else:
+                    st.plotly_chart(dev_fig, config={"displayModeBar": False}, **STRETCH)
 
         # Settings: unobtrusive, collapsed, at the very bottom of the trends tab (never in the main view)
         st.markdown("<div style=""height: 10px""></div>", unsafe_allow_html=True)
